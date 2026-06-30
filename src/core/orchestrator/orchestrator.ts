@@ -28,7 +28,7 @@ export class Orchestrator {
 
   async run(input: OrchestratorInput): Promise<OrchestratorOutput> {
     // 1. Understand
-    const intent = await classifyIntent(input.message);
+    const intent = await classifyIntent(input.message, this.registry.getLLM());
 
     // 2. Fetch context from memory
     const context = await this.memory.search({ userId: input.userId, query: intent.raw });
