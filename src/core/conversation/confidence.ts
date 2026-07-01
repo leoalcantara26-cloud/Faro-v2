@@ -45,9 +45,10 @@ export class ConfidenceLayer {
     }
 
     // Low-confidence entities already collected in session
+    // Threshold lowered to 0.5: only flag when genuinely uncertain, not as a habit
     const state = session.getSnapshot();
     const lowConfidence = Object.entries(state.collectedEntities)
-      .filter(([, v]) => v.confidence < 0.7)
+      .filter(([, v]) => v.confidence < 0.5)
       .map(([k]) => k);
 
     if (lowConfidence.length > 0) {
