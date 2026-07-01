@@ -3,7 +3,7 @@ import * as readline from 'readline';
 import { ClaudeProvider } from '../core/llm/providers/claude.provider';
 import { Registry } from '../registry/registry';
 import { ConversationEngine } from '../core/conversation/engine';
-import { createMockMemory } from '../core/conversation/mocks/memory.mock';
+import { createMockMemoryService } from '../core/conversation/mocks/memory.mock';
 import {
   MockAgendaAgent,
   MockCRMAgent,
@@ -22,9 +22,8 @@ async function main() {
     process.exit(1);
   }
 
-  // Wire up the engine
   const llm = new ClaudeProvider(apiKey);
-  const memory = createMockMemory(USER_ID);
+  const memory = await createMockMemoryService(USER_ID);
   const registry = new Registry();
 
   registry.registerLLMProvider(llm, true);
@@ -37,9 +36,6 @@ async function main() {
 
   const engine = new ConversationEngine(llm, memory, registry);
   const session = engine.createSession(USER_ID);
-
-  // Wait for mock memory to seed
-  await new Promise((r) => setTimeout(r, 100));
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
@@ -56,9 +52,8 @@ async function main() {
       if (text.toLowerCase() === 'sair') { console.log('\nFaro: Até logo!\n'); rl.close(); return; }
 
       try {
-        process.stdout.write('Faro: ');
         const response = await engine.process(session, text);
-        console.log(response.message);
+        console.log(`\nFaro: ${response.message}`);
         if (response.nextStep) console.log(`\n💡 ${response.nextStep}`);
         console.log();
       } catch (err) {

@@ -1,6 +1,7 @@
 import type { ILLMProvider } from '../llm/llm.interface';
 import type { ConversationSession } from './session';
 import type { MemoryEntity } from '../memory/memory.interface';
+import type { ConfidenceAssessment } from './confidence';
 
 export type PlanDecision = 'ask' | 'confirm' | 'execute' | 'respond';
 
@@ -22,18 +23,18 @@ export interface Plan {
 
 const PLANNER_SYSTEM = `Você é o planejador interno do Faro, assistente executivo de vendedores.
 
-Sua única responsabilidade é analisar o contexto da conversa e produzir um plano de ação.
-Você NÃO executa nenhuma ação. Você apenas decide o que deve acontecer.
+Sua ÚNICA responsabilidade é analisar o contexto e produzir um plano estruturado.
+Você NÃO executa nenhuma ação. Você NUNCA chama ferramentas externas. Você apenas decide.
+
+A avaliação de confiança já foi feita antes de você. Use-a para guiar sua decisão.
 
 Regras de decisão:
-- "ask"     → falta informação essencial para prosseguir (ex.: data, cliente, assunto)
-- "confirm" → existe informação mas a confiança é baixa (ex.: pode ter sido mal entendido)
-- "execute" → todas as informações necessárias estão presentes e confiáveis
-- "respond" → é uma pergunta, saudação, ou conversa que não requer ação no sistema
+- "ask"     → falta informação essencial. Use quando confidence.recommendation = ask
+- "confirm" → existe informação mas há incerteza. Use quando confidence.recommendation = confirm
+- "execute" → informações suficientes e confiáveis. Use apenas quando confidence.recommendation = proceed
+- "respond" → pergunta, saudação ou conversa que não exige ação no sistema
 
-Agentes disponíveis: agenda, crm, gmail, followup, briefing, whatsapp, research
-
-Para cada agente, as ações disponíveis são:
+Agentes disponíveis e suas ações:
 - agenda:   list_events, create_event, delete_event
 - crm:      get_client, create_client, update_client, list_clients
 - gmail:    list_emails, send_email, draft_email
@@ -42,7 +43,7 @@ Para cada agente, as ações disponíveis são:
 - whatsapp: send_message
 - research: search_company, search_contact
 
-Você deve sempre chamar a ferramenta "create_plan" com sua decisão.`;
+Chame obrigatoriamente a ferramenta "create_plan" com sua decisão.`;
 
 const CREATE_PLAN_TOOL = {
   name: 'create_plan',
@@ -53,11 +54,10 @@ const CREATE_PLAN_TOOL = {
       decision: {
         type: 'string',
         enum: ['ask', 'confirm', 'execute', 'respond'],
-        description: 'Tipo de decisão tomada',
       },
       reasoning: {
         type: 'string',
-        description: 'Raciocínio interno que levou a essa decisão (não mostrado ao usuário)',
+        description: 'Raciocínio interno (não mostrado ao usuário)',
       },
       action: {
         type: 'object',
@@ -84,7 +84,7 @@ const CREATE_PLAN_TOOL = {
       },
       suggestedNextStep: {
         type: 'string',
-        description: 'Próximo passo útil a sugerir após a execução (opcional)',
+        description: 'Próximo passo útil a sugerir após execução (opcional)',
       },
     },
     required: ['decision', 'reasoning'],
@@ -94,7 +94,11 @@ const CREATE_PLAN_TOOL = {
 export class Planner {
   constructor(private readonly llm: ILLMProvider) {}
 
-  async plan(session: ConversationSession, memoryContext: MemoryEntity[]): Promise<Plan> {
+  async plan(
+    session: ConversationSession,
+    memoryContext: MemoryEntity[],
+    assessment: ConfidenceAssessment,
+  ): Promise<Plan> {
     const state = session.getSnapshot();
     const history = session.getRecentTurns(8);
 
@@ -122,7 +126,15 @@ export class Planner {
         },
         {
           role: 'user',
-          content: `Histórico da conversa:\n${historyText}\n\nProduz um plano de ação.`,
+          content: [
+            `Histórico:\n${historyText}`,
+            `\nAvaliação de confiança: ${assessment.context}`,
+            `Recomendação: ${assessment.recommendation}`,
+            assessment.clarificationQuestion
+              ? `Pergunta sugerida se necessário: "${assessment.clarificationQuestion}"`
+              : '',
+            '\nProduz um plano de ação.',
+          ].filter(Boolean).join('\n'),
         },
       ],
       tools: [CREATE_PLAN_TOOL],
@@ -134,7 +146,7 @@ export class Planner {
     if (!toolCall) {
       return {
         decision: 'respond',
-        reasoning: 'Planner não retornou tool call — respondendo diretamente.',
+        reasoning: 'Planner não retornou tool call.',
         directResponse: response.content,
       };
     }

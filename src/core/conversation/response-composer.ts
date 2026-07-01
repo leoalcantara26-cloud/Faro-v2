@@ -1,4 +1,4 @@
-import type { ILLMProvider } from '../llm/llm.interface';
+import type { ILLMProvider, LLMMessage } from '../llm/llm.interface';
 import type { ExecutionResult } from './executor';
 import type { ConversationSession } from './session';
 
@@ -7,37 +7,41 @@ export interface ComposedResponse {
   nextStep?: string;
 }
 
-const COMPOSER_SYSTEM = `Você é o Faro, assistente executivo de um vendedor de alto desempenho.
+interface ResponseParts {
+  understood: string;
+  did: string;
+  nextStep?: string;
+}
 
-PERSONALIDADE:
-- Você fala como um assistente humano experiente, não como um sistema.
-- Você é direto, claro e confiante.
-- Você demonstra que entende o contexto sem precisar repetir tudo.
+const TONE_SYSTEM = `Você é o Faro, assistente executivo de um vendedor de alto desempenho.
 
-REGRAS ABSOLUTAS DE LINGUAGEM:
-- NUNCA use: "Cliente atualizado.", "Dados salvos.", "Reunião registrada.", "Operação concluída."
-- NUNCA use linguagem técnica ou de sistema.
-- SEMPRE escreva como se estivesse conversando com o vendedor pessoalmente.
-- Respostas curtas para ações simples, detalhadas apenas quando necessário.
-- Use "você" (não "o senhor" nem "tu").
+REGRAS ABSOLUTAS:
+- Fale como um assistente humano experiente. NUNCA como um sistema.
+- PROIBIDO: "Dados salvos.", "Operação concluída.", "Registro efetuado.", "Cliente atualizado."
+- Use "você". Seja direto, caloroso e confiante.
+- Respostas curtas para ações simples.
+- Máximo uma pergunta por vez. Máximo uma sugestão por resposta.`;
 
-QUANDO PEDIR INFORMAÇÃO:
-- Seja natural: "Qual seria a data?" em vez de "Por favor, informe a data."
-- Máximo uma pergunta por vez.
+const UNDERSTOOD_SYSTEM = `${TONE_SYSTEM}
 
-QUANDO PEDIR CONFIRMAÇÃO:
-- Seja breve: "Só confirmando — João Silva, amanhã às 14h. Posso agendar?"
-- Nunca liste os dados como um formulário.
+Escreva UMA frase curta mostrando que entendeu o que o usuário quis dizer.
+Seja natural. Não repita literalmente o que foi dito. Demonstre que entendeu o contexto.
+Exemplos: "Entendi, você precisa agendar para o João." / "Certo, quer verificar o que está pendente."`;
 
-QUANDO EXECUTAR UMA AÇÃO:
-- Confirme que foi feito, de forma humana: "Pronto, já agendei para você."
-- Se relevante, mencione um detalhe para mostrar que entendeu o contexto.
+const DID_SYSTEM = `${TONE_SYSTEM}
 
-SUGESTÃO DE PRÓXIMO PASSO:
-- Sugira apenas quando for genuinamente útil.
-- Seja natural: "Quer que eu prepare um briefing antes da reunião?"
-- NUNCA force uma sugestão se não houver contexto para isso.
-- Máximo uma sugestão por resposta.`;
+Escreva UMA ou DUAS frases descrevendo o que foi feito ou o que precisa ser feito.
+Seja natural e humano. Exemplos:
+- Executado: "Já agendei para segunda às 10h no escritório dele."
+- Pergunta: "Para criar o evento, só preciso saber o horário."
+- Confirmação: "Só confirmando — João Silva, amanhã às 14h. Pode agendar?"
+- Resposta: "Você tem duas reuniões esta semana, nenhuma com conflito."`;
+
+const NEXTSTEP_SYSTEM = `${TONE_SYSTEM}
+
+Você vai receber um próximo passo sugerido. Escreva UMA frase natural propondo isso ao usuário.
+Seja útil, nunca insistente. Se não fizer sentido no contexto, escreva apenas: NENHUM
+Exemplo: "Quer que eu prepare um briefing antes da reunião?"`;
 
 export class ResponseComposer {
   constructor(private readonly llm: ILLMProvider) {}
@@ -45,54 +49,64 @@ export class ResponseComposer {
   async compose(result: ExecutionResult, session: ConversationSession): Promise<ComposedResponse> {
     const recentHistory = session.getRecentTurns(6);
     const historyText = recentHistory
-      .slice(0, -1) // exclude last user turn (already in the instruction)
+      .slice(0, -1)
       .map((t) => `${t.role === 'user' ? 'Vendedor' : 'Faro'}: ${t.content}`)
       .join('\n');
 
+    const lastUserMessage = recentHistory.findLast((t) => t.role === 'user')?.content ?? '';
+    const context = `Histórico:\n${historyText}\n\nÚltima mensagem do usuário: "${lastUserMessage}"`;
+
+    const parts = await this.buildParts(result, context);
+
+    const message = this.assembleParts(parts);
+    return { message, nextStep: parts.nextStep };
+  }
+
+  private async buildParts(result: ExecutionResult, context: string): Promise<ResponseParts> {
     const instruction = this.buildInstruction(result);
 
-    const response = await this.llm.generate({
-      messages: [
-        { role: 'system', content: COMPOSER_SYSTEM },
-        {
-          role: 'user',
-          content: `Histórico recente:\n${historyText}\n\nInstrução interna: ${instruction}`,
-        },
-      ],
-      temperature: 0.7,
-      maxTokens: 512,
-    });
+    const [understood, did, nextStep] = await Promise.all([
+      this.generatePart(UNDERSTOOD_SYSTEM, `${context}\n\nSituação: ${instruction}`),
+      this.generatePart(DID_SYSTEM, `${context}\n\nSituação: ${instruction}`),
+      result.suggestedNextStep
+        ? this.generatePart(NEXTSTEP_SYSTEM, `${context}\n\nPróximo passo a sugerir: ${result.suggestedNextStep}`)
+        : Promise.resolve(undefined),
+    ]);
 
-    return this.parseResponse(response.content, result.suggestedNextStep);
+    return {
+      understood,
+      did,
+      nextStep: nextStep === 'NENHUM' || !nextStep?.trim() ? undefined : nextStep,
+    };
+  }
+
+  private async generatePart(system: string, userContent: string): Promise<string> {
+    const messages: LLMMessage[] = [
+      { role: 'system', content: system },
+      { role: 'user', content: userContent },
+    ];
+    const response = await this.llm.generate({ messages, temperature: 0.6, maxTokens: 128 });
+    return response.content.trim();
   }
 
   private buildInstruction(result: ExecutionResult): string {
     switch (result.outcome) {
       case 'executed':
-        if (result.error) {
-          return `Houve um problema ao executar a ação: ${result.error}. Informe o usuário de forma natural e sugira tentar novamente.`;
-        }
-        return `A ação foi executada com sucesso. Resultado: ${result.agentOutput}. Confirme ao usuário de forma natural.${result.suggestedNextStep ? ` Considere sugerir: ${result.suggestedNextStep}` : ''}`;
-
+        return result.error
+          ? `Houve um problema: ${result.error}`
+          : `Ação executada com sucesso. Resultado: ${result.agentOutput}`;
       case 'asked':
-        return `Precisa perguntar ao usuário: ${result.question}. Faça a pergunta de forma natural, como um assistente humano faria.`;
-
+        return `Precisa perguntar ao usuário: ${result.question}`;
       case 'confirmed':
-        return `Precisa confirmar os dados com o usuário antes de prosseguir: ${result.question}. Seja breve e natural.`;
-
+        return `Precisa confirmar dados antes de prosseguir: ${result.question}`;
       case 'responded':
-        return `Responda diretamente ao usuário. Contexto: ${result.directResponse}.${result.suggestedNextStep ? ` Se fizer sentido, sugira: ${result.suggestedNextStep}` : ''}`;
+        return `Resposta direta: ${result.directResponse}`;
     }
   }
 
-  private parseResponse(content: string, suggestedNextStep?: string): ComposedResponse {
-    // If the LLM embedded the next step in the message, don't duplicate
-    const hasNextStepInContent = suggestedNextStep &&
-      content.toLowerCase().includes(suggestedNextStep.toLowerCase().slice(0, 15));
-
-    return {
-      message: content,
-      nextStep: hasNextStepInContent ? undefined : suggestedNextStep,
-    };
+  private assembleParts(parts: ResponseParts): string {
+    // "Understood" is subtle — used as opening tone, not as a literal header
+    const lines = [parts.understood, parts.did].filter(Boolean);
+    return lines.join(' ');
   }
 }
