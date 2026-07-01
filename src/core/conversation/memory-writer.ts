@@ -1,47 +1,54 @@
 import type { IMemoryService } from '../memory/memory.service';
-import type { ConversationSummary } from './summarizer';
+import type { ConversationUnderstanding } from './summarizer';
+import type { MemoryEntityType } from '../memory/memory.interface';
+
+const ENTITY_TYPE_MAP: Record<string, MemoryEntityType> = {
+  client: 'client',
+  meeting: 'meeting',
+  follow_up: 'history',
+  interaction: 'history',
+};
 
 /**
- * Silently persists extracted facts to memory after every turn.
- * The user never sees this happening — Faro works in the background.
+ * Silently persists everything the Summarizer identified as worth remembering.
+ * The user never sees this step — Faro works in the background.
  */
 export class MemoryWriter {
   constructor(private readonly memory: IMemoryService) {}
 
-  async write(userId: string, summary: ConversationSummary): Promise<void> {
-    if (!summary.client && summary.keyFacts.length === 0) return;
+  async write(userId: string, understanding: ConversationUnderstanding): Promise<void> {
+    if (understanding.memoryUpdates.length === 0 && understanding.keyFacts.length === 0) return;
 
-    const promises: Promise<unknown>[] = [];
+    const writes: Promise<unknown>[] = [];
 
-    // Persist interaction record if there are meaningful facts
-    if (summary.keyFacts.length > 0) {
-      promises.push(
-        this.memory.save(userId, 'history', {
-          tipo: 'interacao',
-          cliente: summary.client ?? null,
-          fatos: summary.keyFacts,
-          acoes: summary.actionItems,
-          proximoPasso: summary.nextStep ?? null,
-          clima: summary.sentiment ?? null,
+    // Persist what the Summarizer explicitly identified as memory updates
+    for (const update of understanding.memoryUpdates) {
+      const entityType = ENTITY_TYPE_MAP[update.entity] ?? 'history';
+      writes.push(
+        this.memory.save(userId, entityType, {
+          ...update.data,
+          origem: 'auto',
           registradoEm: new Date().toISOString(),
         }),
       );
     }
 
-    // Create a follow-up automatically if a next step was mentioned
-    if (summary.nextStep && summary.client) {
-      promises.push(
+    // Always persist the interaction itself if there are meaningful facts
+    if (understanding.keyFacts.length > 0) {
+      writes.push(
         this.memory.save(userId, 'history', {
-          tipo: 'follow-up',
-          cliente: summary.client,
-          descricao: summary.nextStep,
-          status: 'Pendente',
-          origem: 'auto',
-          criadoEm: new Date().toISOString(),
+          tipo: 'interacao',
+          cliente: understanding.client ?? null,
+          fatos: understanding.keyFacts,
+          estagioNegociacao: understanding.negotiationStage,
+          pendencias: understanding.pendingItems,
+          proximosPassos: understanding.nextSteps,
+          clima: understanding.sentiment,
+          registradoEm: new Date().toISOString(),
         }),
       );
     }
 
-    await Promise.all(promises);
+    await Promise.all(writes);
   }
 }

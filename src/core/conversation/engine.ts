@@ -74,14 +74,14 @@ export class ConversationEngine {
     // 6. Execute
     const result = await this.executor.execute(plan, assessment, session);
 
-    // 7. Summarize facts from user message
-    const summary = await this.summarizer.summarize(userMessage, session);
+    // 7. Build structured understanding of the conversation
+    const understanding = await this.summarizer.summarize(userMessage, session);
 
-    // 8. Persist facts silently (user never sees this step)
-    await this.memoryWriter.write(session.userId, summary);
+    // 8. Persist silently — user never sees this step
+    await this.memoryWriter.write(session.userId, understanding);
 
-    // 9. Compose response (profile-aware verbosity)
-    const response = await this.composer.compose(result, session, summary, profile);
+    // 9. Compose response (profile-aware verbosity, uses bestNextQuestion)
+    const response = await this.composer.compose(result, session, understanding, profile);
 
     // 10. Record assistant turn
     session.addTurn('assistant', response.message);
