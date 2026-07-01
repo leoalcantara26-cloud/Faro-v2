@@ -27,7 +27,7 @@ export class MockAgendaAgent implements IAgent {
         output: `Reunião "${summary}" agendada para ${start}. Já está na sua agenda.`,
         updatedMemory: [{
           type: 'meeting',
-          data: { titulo: summary, data: start, status: 'Confirmada', cliente: params.params?.attendees?.[0] ?? '' },
+          data: { titulo: summary, data: start, status: 'Confirmada', cliente: (params.params?.attendees as string[] | undefined)?.[0] ?? '' },
         }],
       };
     }

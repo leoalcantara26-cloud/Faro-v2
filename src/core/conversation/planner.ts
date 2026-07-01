@@ -151,6 +151,6 @@ export class Planner {
       };
     }
 
-    return toolCall.arguments as Plan;
+    return toolCall.arguments as unknown as Plan;
   }
 }

@@ -53,7 +53,7 @@ export class ResponseComposer {
       .map((t) => `${t.role === 'user' ? 'Vendedor' : 'Faro'}: ${t.content}`)
       .join('\n');
 
-    const lastUserMessage = recentHistory.findLast((t) => t.role === 'user')?.content ?? '';
+    const lastUserMessage = [...recentHistory].reverse().find((t) => t.role === 'user')?.content ?? '';
     const context = `Histórico:\n${historyText}\n\nÚltima mensagem do usuário: "${lastUserMessage}"`;
 
     const parts = await this.buildParts(result, context);
