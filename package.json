@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "ts-node src/index.ts",
+    "chat": "ts-node src/dev/chat.ts",
     "lint": "eslint src --ext .ts"
   },
   "dependencies": {
