@@ -78,5 +78,8 @@ export async function createMockMemoryService(userId: string): Promise<IMemorySe
     prioridade: 'Alta',
   }, 'followup-2');
 
+  // Default assistance profile
+  await service.save(userId, 'preference', { userId, profile: 'equilibrado' }, `pref-${userId}`);
+
   return service;
 }

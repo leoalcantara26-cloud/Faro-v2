@@ -3,6 +3,8 @@ import * as readline from 'readline';
 import { ClaudeProvider } from '../core/llm/providers/claude.provider';
 import { Registry } from '../registry/registry';
 import { ConversationEngine } from '../core/conversation/engine';
+import { PreferenceService } from '../core/user/preference.service';
+import type { AssistanceProfile } from '../core/user/profile';
 import { createMockMemoryService } from '../core/conversation/mocks/memory.mock';
 import {
   MockAgendaAgent,
@@ -36,20 +38,34 @@ async function main() {
 
   const engine = new ConversationEngine(llm, memory, registry);
   const session = engine.createSession(USER_ID);
+  const preferences = new PreferenceService(memory);
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
   console.log('\n─────────────────────────────────────────');
   console.log('  Faro OS 2.0 — Conversation Engine');
-  console.log('  Sprint 1 · Mock Mode');
+  console.log('  Sprint 1.5 · Mock Mode');
   console.log('─────────────────────────────────────────');
-  console.log('  Digite sua mensagem ou "sair" para encerrar.\n');
+  console.log('  Comandos especiais:');
+  console.log('  /perfil objetivo | equilibrado | mentor');
+  console.log('  sair');
+  console.log('─────────────────────────────────────────\n');
 
   const ask = () => {
     rl.question('Você: ', async (input) => {
       const text = input.trim();
       if (!text) { ask(); return; }
       if (text.toLowerCase() === 'sair') { console.log('\nFaro: Até logo!\n'); rl.close(); return; }
+
+      // Profile switch command
+      const profileMatch = text.match(/^\/perfil\s+(objetivo|equilibrado|mentor)$/i);
+      if (profileMatch) {
+        const profile = profileMatch[1].toLowerCase() as AssistanceProfile;
+        await preferences.setProfile(USER_ID, profile);
+        console.log(`\n[Perfil alterado para: ${profile}]\n`);
+        ask();
+        return;
+      }
 
       try {
         const response = await engine.process(session, text);
