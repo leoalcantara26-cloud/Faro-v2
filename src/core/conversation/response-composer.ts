@@ -1,112 +1,128 @@
-import type { ILLMProvider, LLMMessage } from '../llm/llm.interface';
+import type { ILLMProvider } from '../llm/llm.interface';
 import type { ExecutionResult } from './executor';
 import type { ConversationSession } from './session';
+import type { ConversationSummary } from './summarizer';
 
 export interface ComposedResponse {
   message: string;
   nextStep?: string;
 }
 
-interface ResponseParts {
-  understood: string;
-  did: string;
-  nextStep?: string;
-}
+const COMPOSER_SYSTEM = `Você é o Faro, assistente executivo de um vendedor de alto desempenho.
+Você age como um coach de vendas experiente: escuta com atenção, raciocina, conduz a conversa e agrega valor.
 
-const TONE_SYSTEM = `Você é o Faro, assistente executivo de um vendedor de alto desempenho.
+━━ RITMO OBRIGATÓRIO ━━
+Toda resposta segue esta estrutura mental (sem títulos visíveis):
+1. Demonstrar que ouviu — referencie fatos específicos do que foi dito. Não transcreva. Interprete e reorganize.
+2. Agregar valor — quando relevante, ofereça um insight, observação ou conexão que o vendedor não disse explicitamente.
+3. Conduzir — faça UMA pergunta inteligente OU sugira um próximo passo. Nunca os dois. Nunca mais de um.
 
-REGRAS ABSOLUTAS:
-- Fale como um assistente humano experiente. NUNCA como um sistema.
-- PROIBIDO: "Dados salvos.", "Operação concluída.", "Registro efetuado.", "Cliente atualizado."
+━━ REGRAS ABSOLUTAS ━━
+- NUNCA repita a mesma informação duas vezes na mesma resposta.
+- NUNCA faça mais de uma pergunta por resposta.
+- NUNCA responda como sistema: proibido "Dados salvos.", "Reunião registrada.", "Atualizado."
+- NUNCA dê respostas genéricas de uma linha quando o usuário compartilhou informações detalhadas.
+- NUNCA comece respostas com "Entendido!", "Perfeito!", "Ótimo!" isolados — esses marcadores são vazios.
+
+━━ INTELIGÊNCIA DE VENDAS ━━
+Você conhece o processo de vendas. Use esse conhecimento para interpretar o que foi dito:
+- Esposa/sócio participou da reunião → sinal positivo: os dois já conhecem o produto, próxima reunião tende a ser decisão.
+- Valores foram apresentados → próxima reunião foca em proposta e objeções, não em produto.
+- Cliente disse "vou pensar" → há objeção não verbalizada. Vale perguntar qual foi a reação ao valor.
+- Reunião marcada → o mais valioso é preparar o terreno antes, não apenas confirmar o horário.
+- Follow-up atrasado → mencione proativamente se for relevante.
+- Reunião de primeira visita → o objetivo é qualificação, não fechamento. Pergunte sobre perfil do cliente.
+
+━━ CONDUZIR A CONVERSA ━━
+Você não apenas reage — você guia.
+Após um debriefing de reunião, você sabe quais informações importam:
+- Reação do cliente aos valores
+- Principais objeções
+- O que mais chamou atenção
+- Próximo passo combinado
+- Nível de interesse percebido
+
+Pergunte a coisa mais valiosa para aquele momento, não a mais óbvia.
+"Como foi?" é uma pergunta fraca. "O que mais chamou a atenção do cliente?" é uma pergunta que gera valor.
+
+━━ TOM ━━
 - Use "você". Seja direto, caloroso e confiante.
-- Respostas curtas para ações simples.
-- Máximo uma pergunta por vez. Máximo uma sugestão por resposta.`;
-
-const UNDERSTOOD_SYSTEM = `${TONE_SYSTEM}
-
-Escreva UMA frase curta mostrando que entendeu o que o usuário quis dizer.
-Seja natural. Não repita literalmente o que foi dito. Demonstre que entendeu o contexto.
-Exemplos: "Entendi, você precisa agendar para o João." / "Certo, quer verificar o que está pendente."`;
-
-const DID_SYSTEM = `${TONE_SYSTEM}
-
-Escreva UMA ou DUAS frases descrevendo o que foi feito ou o que precisa ser feito.
-Seja natural e humano. Exemplos:
-- Executado: "Já agendei para segunda às 10h no escritório dele."
-- Pergunta: "Para criar o evento, só preciso saber o horário."
-- Confirmação: "Só confirmando — João Silva, amanhã às 14h. Pode agendar?"
-- Resposta: "Você tem duas reuniões esta semana, nenhuma com conflito."`;
-
-const NEXTSTEP_SYSTEM = `${TONE_SYSTEM}
-
-Você vai receber um próximo passo sugerido. Escreva UMA frase natural propondo isso ao usuário.
-Seja útil, nunca insistente. Se não fizer sentido no contexto, escreva apenas: NENHUM
-Exemplo: "Quer que eu prepare um briefing antes da reunião?"`;
+- Respostas curtas para situações simples. Detalhadas quando o usuário compartilhou muito.
+- Nunca use jargão técnico. Fale como um colega experiente, não como um software.`;
 
 export class ResponseComposer {
   constructor(private readonly llm: ILLMProvider) {}
 
-  async compose(result: ExecutionResult, session: ConversationSession): Promise<ComposedResponse> {
-    const recentHistory = session.getRecentTurns(6);
-    const historyText = recentHistory
+  async compose(
+    result: ExecutionResult,
+    session: ConversationSession,
+    summary: ConversationSummary,
+  ): Promise<ComposedResponse> {
+    const recentTurns = session.getRecentTurns(8);
+    const historyText = recentTurns
       .slice(0, -1)
       .map((t) => `${t.role === 'user' ? 'Vendedor' : 'Faro'}: ${t.content}`)
       .join('\n');
 
-    const lastUserMessage = [...recentHistory].reverse().find((t) => t.role === 'user')?.content ?? '';
-    const context = `Histórico:\n${historyText}\n\nÚltima mensagem do usuário: "${lastUserMessage}"`;
+    const summaryBlock = this.buildSummaryBlock(summary);
+    const situationBlock = this.buildSituationBlock(result);
 
-    const parts = await this.buildParts(result, context);
-
-    const message = this.assembleParts(parts);
-    return { message, nextStep: parts.nextStep };
-  }
-
-  private async buildParts(result: ExecutionResult, context: string): Promise<ResponseParts> {
-    const instruction = this.buildInstruction(result);
-
-    const [understood, did, nextStep] = await Promise.all([
-      this.generatePart(UNDERSTOOD_SYSTEM, `${context}\n\nSituação: ${instruction}`),
-      this.generatePart(DID_SYSTEM, `${context}\n\nSituação: ${instruction}`),
+    const userContent = [
+      historyText ? `Histórico recente:\n${historyText}` : '',
+      `\nFatos estruturados extraídos da fala do usuário:\n${summaryBlock}`,
+      `\nSituação atual: ${situationBlock}`,
       result.suggestedNextStep
-        ? this.generatePart(NEXTSTEP_SYSTEM, `${context}\n\nPróximo passo a sugerir: ${result.suggestedNextStep}`)
-        : Promise.resolve(undefined),
-    ]);
+        ? `\nPróximo passo disponível para sugerir (use apenas se fizer sentido): ${result.suggestedNextStep}`
+        : '',
+      '\nEscreva a resposta do Faro agora.',
+    ].filter(Boolean).join('\n');
+
+    const response = await this.llm.generate({
+      messages: [
+        { role: 'system', content: COMPOSER_SYSTEM },
+        { role: 'user', content: userContent },
+      ],
+      temperature: 0.65,
+      maxTokens: 400,
+    });
+
+    const message = response.content.trim();
+
+    // Detect if the suggested next step was already embedded in the response
+    const nextStepEmbedded = result.suggestedNextStep &&
+      message.toLowerCase().includes(
+        result.suggestedNextStep.toLowerCase().slice(0, 20),
+      );
 
     return {
-      understood,
-      did,
-      nextStep: nextStep === 'NENHUM' || !nextStep?.trim() ? undefined : nextStep,
+      message,
+      nextStep: nextStepEmbedded ? undefined : result.suggestedNextStep,
     };
   }
 
-  private async generatePart(system: string, userContent: string): Promise<string> {
-    const messages: LLMMessage[] = [
-      { role: 'system', content: system },
-      { role: 'user', content: userContent },
-    ];
-    const response = await this.llm.generate({ messages, temperature: 0.6, maxTokens: 128 });
-    return response.content.trim();
+  private buildSummaryBlock(summary: ConversationSummary): string {
+    const lines: string[] = [];
+    if (summary.client) lines.push(`- Cliente: ${summary.client}`);
+    summary.keyFacts.forEach((f) => lines.push(`- ${f}`));
+    summary.actionItems.forEach((a) => lines.push(`- Ação: ${a}`));
+    if (summary.nextStep) lines.push(`- Próximo passo mencionado: ${summary.nextStep}`);
+    if (summary.sentiment && summary.sentiment !== 'indefinido') lines.push(`- Clima: ${summary.sentiment}`);
+    if (summary.missingInfo.length > 0) lines.push(`- Informações não mencionadas: ${summary.missingInfo.join(', ')}`);
+    return lines.join('\n') || '- Mensagem curta, sem fatos estruturados';
   }
 
-  private buildInstruction(result: ExecutionResult): string {
+  private buildSituationBlock(result: ExecutionResult): string {
     switch (result.outcome) {
       case 'executed':
         return result.error
-          ? `Houve um problema: ${result.error}`
-          : `Ação executada com sucesso. Resultado: ${result.agentOutput}`;
+          ? `Houve um problema ao executar: ${result.error}`
+          : `Ação executada. Resultado: ${result.agentOutput}`;
       case 'asked':
-        return `Precisa perguntar ao usuário: ${result.question}`;
+        return `Precisa pedir mais informação: ${result.question}`;
       case 'confirmed':
         return `Precisa confirmar dados antes de prosseguir: ${result.question}`;
       case 'responded':
-        return `Resposta direta: ${result.directResponse}`;
+        return `Resposta conversacional. Contexto: ${result.directResponse}`;
     }
-  }
-
-  private assembleParts(parts: ResponseParts): string {
-    // "Understood" is subtle — used as opening tone, not as a literal header
-    const lines = [parts.understood, parts.did].filter(Boolean);
-    return lines.join(' ');
   }
 }
