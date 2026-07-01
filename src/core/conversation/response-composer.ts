@@ -91,7 +91,7 @@ export class ResponseComposer {
     goalState?: GoalTrackerState,
   ): Promise<ComposedResponse> {
     // When context is closed, give a brief closing confirmation — no questions
-    if (goalState?.contextStatus === 'closed') {
+    if (goalState?.conversation.status === 'closed') {
       return this.composeClosing(result, session, understanding, profile);
     }
     const recentTurns = session.getRecentTurns(8);

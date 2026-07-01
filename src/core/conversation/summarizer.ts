@@ -1,5 +1,6 @@
 import type { ILLMProvider } from '../llm/llm.interface';
 import type { ConversationSession } from './session';
+import type { ConversationEntity } from './goal-tracker';
 
 export type NegotiationStage =
   | 'primeiro_contato'
@@ -48,6 +49,9 @@ export interface ConversationUnderstanding {
 
   // Explicit goals/tasks the user requested this turn (e.g. "criar reunião", "enviar e-mail")
   detectedGoals: string[];
+
+  // Entities extracted from the conversation (client names, dates, amounts, etc.)
+  detectedEntities: ConversationEntity[];
 }
 
 const SUMMARIZER_SYSTEM = `Você é o modelo de entendimento interno do Faro, assistente executivo de um vendedor.
@@ -67,6 +71,7 @@ Campos obrigatórios:
 - bestNextQuestion: a pergunta única mais útil para avançar a conversa agora. Deve ser específica, não genérica. Nunca "Como foi?" — sempre algo que gera informação real.
 - sentiment: positivo | negativo | neutro | indefinido
 - detectedGoals: lista de tarefas ou objetivos explicitamente pedidos pelo usuário nesta mensagem (ex: ["criar reunião", "enviar e-mail para Gustavo", "criar lembrete"]). Vazia se o usuário não pediu nada concreto.
+- detectedEntities: lista de entidades identificadas. Cada item tem "type" (client | company | product | date | amount | contact | etc.), "value" (valor extraído) e "confidence" (0.0 a 1.0). Vazia se não houver entidades claras.
 
 Nunca invente informações. Nunca assuma o que não foi dito.
 Nunca inclua conselhos de vendas ou avaliações — apenas fatos e estrutura.`;
@@ -115,6 +120,7 @@ export class Summarizer {
         bestNextQuestion: 'Pode me contar mais detalhes?',
         sentiment: 'indefinido',
         detectedGoals: [],
+        detectedEntities: [],
       };
     }
   }

@@ -10,6 +10,8 @@ import { Summarizer } from './summarizer';
 import { MemoryWriter } from './memory-writer';
 import { ResponseComposer } from './response-composer';
 import { PreferenceService } from '../user/preference.service';
+import { KeywordTaskPlanner } from './task-planner';
+import type { ITaskPlanner } from './task-planner';
 
 export interface EngineResponse {
   message: string;
@@ -19,8 +21,9 @@ export interface EngineResponse {
 /**
  * Conversation Engine pipeline:
  * Intent → Memory+Profile → Confidence → GoalTracker.reopen
- * → Planner(goalState) → Executor → Summarizer
- * → GoalTracker.update → MemoryWriter → ResponseComposer(profile, goalState)
+ * → Summarizer (detectedGoals + entities) → GoalTracker.update
+ * → TaskPlanner (Goal → Task[]) → Planner(tasks) → Executor
+ * → GoalTracker.markCompleted → MemoryWriter → ResponseComposer
  */
 export class ConversationEngine {
   private confidence: ConfidenceLayer;
@@ -30,6 +33,7 @@ export class ConversationEngine {
   private memoryWriter: MemoryWriter;
   private composer: ResponseComposer;
   private preferences: PreferenceService;
+  private taskPlanner: ITaskPlanner;
 
   constructor(
     private readonly llm: ILLMProvider,
@@ -43,6 +47,7 @@ export class ConversationEngine {
     this.memoryWriter = new MemoryWriter(memory);
     this.composer = new ResponseComposer(llm);
     this.preferences = new PreferenceService(memory);
+    this.taskPlanner = new KeywordTaskPlanner();
   }
 
   createSession(userId: string): ConversationSession {
@@ -69,35 +74,45 @@ export class ConversationEngine {
 
     // 4b. Allow GoalTracker to reopen a context if user explicitly references it
     session.goalTracker.reopenIfNeeded(userMessage);
-    const goalStateBefore = session.getGoalState();
 
-    // 5. Plan — receives goal state to enforce attention mode
-    const plan = await this.planner.plan(session, memoryContext, assessment, goalStateBefore);
-
-    // 6. Execute
-    const result = await this.executor.execute(plan, assessment, session);
-
-    // 7. Summarize — extracts detectedGoals for this turn
+    // 5. Summarize — extracts detectedGoals and entities for this turn
     const understanding = await this.summarizer.summarize(userMessage, session);
 
-    // 8. Update GoalTracker
-    // Register any new goals the user mentioned this turn
+    // 6. Update GoalTracker with new goals and entities
     if (understanding.detectedGoals.length > 0) {
       session.goalTracker.addGoals(understanding.detectedGoals);
     }
-    // Mark goals as completed when an agent executed successfully
-    if (result.outcome === 'executed' && !result.error && plan.action?.agent) {
-      session.goalTracker.markCompletedByAgent(plan.action.agent);
+    if (understanding.detectedEntities.length > 0) {
+      session.goalTracker.addEntities(understanding.detectedEntities);
     }
+
+    const goalState = session.getGoalState();
+    const conversation = session.getConversation();
+
+    // 7. TaskPlanner maps open Goals → Tasks (only component that knows agents)
+    const openGoals = session.goalTracker.getOpenGoals();
+    const tasks = await this.taskPlanner.plan(openGoals, conversation);
+
+    // 8. Plan — receives tasks instead of raw agent names
+    const plan = await this.planner.plan(session, memoryContext, assessment, goalState, tasks);
+
+    // 9. Execute
+    const result = await this.executor.execute(plan, assessment, session, tasks);
+
+    // 10. Mark goal as completed if a task executed successfully
+    if (result.outcome === 'executed' && !result.error && result.completedGoalId) {
+      session.goalTracker.markGoalCompleted(result.completedGoalId);
+    }
+
     const goalStateAfter = session.getGoalState();
 
-    // 9. Persist silently
+    // 11. Persist silently
     await this.memoryWriter.write(session.userId, understanding);
 
-    // 10. Compose response — aware of profile and goal state
+    // 12. Compose response — aware of profile and goal state
     const response = await this.composer.compose(result, session, understanding, profile, goalStateAfter);
 
-    // 11. Record assistant turn
+    // 13. Record assistant turn
     session.addTurn('assistant', response.message);
 
     return response;

@@ -3,6 +3,7 @@ import type { ConfidenceAssessment } from './confidence';
 import type { ConversationSession } from './session';
 import type { Registry } from '../../registry/registry';
 import type { AgentContext } from '../../agents/agent.interface';
+import type { Task } from './task-planner';
 
 export interface ExecutionResult {
   outcome: 'executed' | 'asked' | 'confirmed' | 'responded';
@@ -11,6 +12,8 @@ export interface ExecutionResult {
   directResponse?: string;
   suggestedNextStep?: string;
   error?: string;
+  /** GoalId of the task that was executed (if any) */
+  completedGoalId?: string;
 }
 
 export class Executor {
@@ -20,6 +23,7 @@ export class Executor {
     plan: Plan,
     assessment: ConfidenceAssessment,
     session: ConversationSession,
+    tasks: Task[],
   ): Promise<ExecutionResult> {
     // Override execute decision if confidence layer says otherwise
     const effectiveDecision =
@@ -36,7 +40,6 @@ export class Executor {
         };
 
       case 'confirm':
-        // Store the action as pending so we can resume after confirmation
         if (plan.action) {
           session.setPendingAction({
             agent: plan.action.agent,
@@ -63,10 +66,14 @@ export class Executor {
           return { outcome: 'responded', directResponse: plan.directResponse ?? '' };
         }
 
-        // Check if user just confirmed a pending action
         const state = session.getSnapshot();
         const actionToRun = state.pendingAction ?? plan.action;
         session.clearPendingAction();
+
+        // Find the task that matches this action to get its goalId
+        const matchedTask = tasks.find(
+          (t) => t.agent === actionToRun.agent && t.action === actionToRun.action,
+        );
 
         try {
           const agent = this.registry.getAgent(actionToRun.agent);
@@ -83,6 +90,7 @@ export class Executor {
             agentOutput: result.output,
             suggestedNextStep: plan.suggestedNextStep,
             error: result.success ? undefined : result.error,
+            completedGoalId: result.success ? matchedTask?.goalId : undefined,
           };
         } catch (err) {
           return {

@@ -4,134 +4,155 @@ export type GoalStatus = 'open' | 'awaiting_info' | 'completed' | 'discarded';
 export type AttentionMode = 'execution' | 'conversational';
 export type ContextStatus = 'active' | 'awaiting_info' | 'completed' | 'closed';
 
+export interface ConversationEntity {
+  type: string;    // 'client' | 'company' | 'product' | 'date' | 'amount' | etc.
+  value: string;
+  confidence: number;
+}
+
 export interface Goal {
   id: string;
+  conversationId: string;
   description: string;
-  agent?: string;
   status: GoalStatus;
-  missingInfo: string[];
   createdAt: Date;
   completedAt?: Date;
 }
 
-export interface GoalTrackerState {
+export interface Conversation {
+  id: string;
+  title: string;
+  startedAt: Date;
+  updatedAt: Date;
+  closedAt?: Date;
+  status: ContextStatus;
+  entities: ConversationEntity[];
   goals: Goal[];
+}
+
+export interface GoalTrackerState {
+  conversation: Conversation;
   attentionMode: AttentionMode;
-  contextStatus: ContextStatus;
-  /** The single question that most directly unblocks an open goal. */
   blockingQuestion: string | null;
 }
 
-/**
- * Keywords that map a goal description to an agent.
- * Used to mark goals as completed when an agent executes successfully.
- */
-const GOAL_AGENT_MAP: Array<{ keywords: string[]; agent: string }> = [
-  { keywords: ['reunião', 'agendar', 'agenda', 'evento', 'calendar'], agent: 'agenda' },
-  { keywords: ['e-mail', 'email', 'mensagem', 'gmail'], agent: 'gmail' },
-  { keywords: ['lembrete', 'follow-up', 'followup', 'lembrar', 'pendência'], agent: 'followup' },
-  { keywords: ['whatsapp', 'zap', 'mensagem whatsapp', 'avisar', 'concierge'], agent: 'whatsapp' },
-  { keywords: ['crm', 'cliente', 'registrar cliente', 'atualizar'], agent: 'crm' },
-  { keywords: ['briefing', 'preparar', 'resumo'], agent: 'briefing' },
-  { keywords: ['pesquisar', 'pesquisa', 'linkedin', 'empresa'], agent: 'research' },
-];
-
-function inferAgent(description: string): string | undefined {
-  const lower = description.toLowerCase();
-  return GOAL_AGENT_MAP.find((m) => m.keywords.some((k) => lower.includes(k)))?.agent;
-}
-
 export class GoalTracker {
-  private goals: Goal[] = [];
+  private conversation: Conversation;
 
-  /**
-   * Register new goals from the current turn.
-   * Goals already tracked are not duplicated (matched by description similarity).
-   */
-  addGoals(detectedGoals: string[]): void {
-    for (const description of detectedGoals) {
-      const alreadyTracked = this.goals.some(
-        (g) => g.status !== 'discarded' &&
+  constructor() {
+    const id = randomUUID();
+    this.conversation = {
+      id,
+      title: 'Nova conversa',
+      startedAt: new Date(),
+      updatedAt: new Date(),
+      status: 'active',
+      entities: [],
+      goals: [],
+    };
+  }
+
+  getConversation(): Conversation {
+    return this.conversation;
+  }
+
+  addGoals(descriptions: string[]): void {
+    for (const description of descriptions) {
+      const alreadyTracked = this.conversation.goals.some(
+        (g) =>
+          g.status !== 'discarded' &&
           g.description.toLowerCase().includes(description.toLowerCase().slice(0, 15)),
       );
       if (alreadyTracked) continue;
 
-      this.goals.push({
+      this.conversation.goals.push({
         id: randomUUID(),
+        conversationId: this.conversation.id,
         description,
-        agent: inferAgent(description),
         status: 'open',
-        missingInfo: [],
         createdAt: new Date(),
       });
+      this.conversation.updatedAt = new Date();
     }
   }
 
-  /**
-   * Mark goals as completed when a specific agent executed successfully.
-   * Called by the Engine after a successful Executor run.
-   */
-  markCompletedByAgent(agentName: string): void {
-    for (const goal of this.goals) {
-      if (goal.status === 'open' || goal.status === 'awaiting_info') {
-        if (goal.agent === agentName) {
-          goal.status = 'completed';
-          goal.completedAt = new Date();
-        }
+  addEntities(entities: ConversationEntity[]): void {
+    for (const incoming of entities) {
+      const exists = this.conversation.entities.some(
+        (e) => e.type === incoming.type && e.value === incoming.value,
+      );
+      if (!exists) {
+        this.conversation.entities.push(incoming);
       }
     }
+    if (entities.length > 0) this.conversation.updatedAt = new Date();
   }
 
-  /**
-   * Mark a goal as awaiting information.
-   */
-  markAwaitingInfo(goalId: string, missingInfo: string[]): void {
-    const goal = this.goals.find((g) => g.id === goalId);
+  markGoalCompleted(goalId: string): void {
+    const goal = this.conversation.goals.find((g) => g.id === goalId);
+    if (goal && (goal.status === 'open' || goal.status === 'awaiting_info')) {
+      goal.status = 'completed';
+      goal.completedAt = new Date();
+      this.conversation.updatedAt = new Date();
+    }
+    this._syncConversationStatus();
+  }
+
+  markAwaitingInfo(goalId: string): void {
+    const goal = this.conversation.goals.find((g) => g.id === goalId);
     if (goal) {
       goal.status = 'awaiting_info';
-      goal.missingInfo = missingInfo;
+      this.conversation.updatedAt = new Date();
     }
+    this._syncConversationStatus();
   }
 
-  /**
-   * Reopen a closed context if the user explicitly references it again.
-   */
   reopenIfNeeded(userMessage: string): void {
     const lower = userMessage.toLowerCase();
-    for (const goal of this.goals) {
+    for (const goal of this.conversation.goals) {
       if (goal.status === 'completed' || goal.status === 'discarded') {
         if (lower.includes(goal.description.toLowerCase().slice(0, 10))) {
           goal.status = 'open';
           goal.completedAt = undefined;
+          this.conversation.updatedAt = new Date();
         }
       }
     }
-  }
-
-  getState(): GoalTrackerState {
-    const openGoals = this.goals.filter((g) => g.status === 'open' || g.status === 'awaiting_info');
-    const allDone = this.goals.length > 0 &&
-      this.goals.every((g) => g.status === 'completed' || g.status === 'discarded');
-
-    const attentionMode: AttentionMode = openGoals.length > 0 ? 'execution' : 'conversational';
-
-    let contextStatus: ContextStatus = 'active';
-    if (allDone) contextStatus = 'closed';
-    else if (openGoals.some((g) => g.status === 'awaiting_info')) contextStatus = 'awaiting_info';
-
-    const blockingQuestion = openGoals.length > 0
-      ? this.buildBlockingQuestion(openGoals[0])
-      : null;
-
-    return { goals: [...this.goals], attentionMode, contextStatus, blockingQuestion };
+    this._syncConversationStatus();
   }
 
   getOpenGoals(): Goal[] {
-    return this.goals.filter((g) => g.status === 'open' || g.status === 'awaiting_info');
+    return this.conversation.goals.filter(
+      (g) => g.status === 'open' || g.status === 'awaiting_info',
+    );
   }
 
-  private buildBlockingQuestion(goal: Goal): string {
-    if (goal.missingInfo.length > 0) return goal.missingInfo[0];
-    return `O que preciso saber para ${goal.description.toLowerCase()}?`;
+  getState(): GoalTrackerState {
+    const openGoals = this.getOpenGoals();
+    const attentionMode: AttentionMode = openGoals.length > 0 ? 'execution' : 'conversational';
+    const blockingQuestion =
+      openGoals.length > 0
+        ? `O que preciso saber para ${openGoals[0].description.toLowerCase()}?`
+        : null;
+
+    return {
+      conversation: { ...this.conversation, goals: [...this.conversation.goals] },
+      attentionMode,
+      blockingQuestion,
+    };
+  }
+
+  private _syncConversationStatus(): void {
+    const goals = this.conversation.goals;
+    if (goals.length === 0) { this.conversation.status = 'active'; return; }
+
+    const allDone = goals.every((g) => g.status === 'completed' || g.status === 'discarded');
+    if (allDone) {
+      this.conversation.status = 'closed';
+      this.conversation.closedAt = new Date();
+      return;
+    }
+    const anyAwaiting = goals.some((g) => g.status === 'awaiting_info');
+    this.conversation.status = anyAwaiting ? 'awaiting_info' : 'active';
   }
 }
