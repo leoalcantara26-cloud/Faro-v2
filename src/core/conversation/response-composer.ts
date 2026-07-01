@@ -3,6 +3,7 @@ import type { ExecutionResult } from './executor';
 import type { ConversationSession } from './session';
 import type { ConversationUnderstanding } from './summarizer';
 import type { AssistanceProfile } from '../user/profile';
+import type { GoalTrackerState } from './goal-tracker';
 
 export interface ComposedResponse {
   message: string;
@@ -87,7 +88,12 @@ export class ResponseComposer {
     session: ConversationSession,
     understanding: ConversationUnderstanding,
     profile: AssistanceProfile = 'equilibrado',
+    goalState?: GoalTrackerState,
   ): Promise<ComposedResponse> {
+    // When context is closed, give a brief closing confirmation — no questions
+    if (goalState?.contextStatus === 'closed') {
+      return this.composeClosing(result, session, understanding, profile);
+    }
     const recentTurns = session.getRecentTurns(8);
     const historyText = recentTurns
       .slice(0, -1)
@@ -124,5 +130,33 @@ export class ResponseComposer {
       message,
       nextStep: nextStepEmbedded ? undefined : result.suggestedNextStep,
     };
+  }
+
+  private async composeClosing(
+    result: ExecutionResult,
+    session: ConversationSession,
+    understanding: ConversationUnderstanding,
+    profile: AssistanceProfile,
+  ): Promise<ComposedResponse> {
+    const CLOSING_SYSTEM = `${BASE_RULES}\n${PROFILE_TONE[profile]}
+
+CONTEXTO FECHADO: Todos os objetivos desta conversa foram concluídos.
+Escreva APENAS uma confirmação muito breve do que foi feito.
+NÃO faça perguntas. NÃO sugira próximos passos não solicitados.
+Aguarde o usuário iniciar um novo assunto.`;
+
+    const response = await this.llm.generate({
+      messages: [
+        { role: 'system', content: CLOSING_SYSTEM },
+        {
+          role: 'user',
+          content: `O que foi feito: ${buildSituationBlock(result)}\nFatos: ${understanding.keyFacts.join(', ')}`,
+        },
+      ],
+      temperature: 0.5,
+      maxTokens: 150,
+    });
+
+    return { message: response.content.trim() };
   }
 }

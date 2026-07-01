@@ -45,6 +45,9 @@ export interface ConversationUnderstanding {
 
   // Overall tone of what was shared
   sentiment: 'positivo' | 'negativo' | 'neutro' | 'indefinido';
+
+  // Explicit goals/tasks the user requested this turn (e.g. "criar reunião", "enviar e-mail")
+  detectedGoals: string[];
 }
 
 const SUMMARIZER_SYSTEM = `Você é o modelo de entendimento interno do Faro, assistente executivo de um vendedor.
@@ -63,6 +66,7 @@ Campos obrigatórios:
 - memoryUpdates: o que deve ser salvo na memória. Cada item tem "entity" (client | meeting | follow_up | interaction) e "data" (objeto com os campos relevantes)
 - bestNextQuestion: a pergunta única mais útil para avançar a conversa agora. Deve ser específica, não genérica. Nunca "Como foi?" — sempre algo que gera informação real.
 - sentiment: positivo | negativo | neutro | indefinido
+- detectedGoals: lista de tarefas ou objetivos explicitamente pedidos pelo usuário nesta mensagem (ex: ["criar reunião", "enviar e-mail para Gustavo", "criar lembrete"]). Vazia se o usuário não pediu nada concreto.
 
 Nunca invente informações. Nunca assuma o que não foi dito.
 Nunca inclua conselhos de vendas ou avaliações — apenas fatos e estrutura.`;
@@ -110,6 +114,7 @@ export class Summarizer {
         memoryUpdates: [],
         bestNextQuestion: 'Pode me contar mais detalhes?',
         sentiment: 'indefinido',
+        detectedGoals: [],
       };
     }
   }

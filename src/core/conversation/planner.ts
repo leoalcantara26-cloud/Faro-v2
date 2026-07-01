@@ -2,6 +2,7 @@ import type { ILLMProvider } from '../llm/llm.interface';
 import type { ConversationSession } from './session';
 import type { MemoryEntity } from '../memory/memory.interface';
 import type { ConfidenceAssessment } from './confidence';
+import type { GoalTrackerState } from './goal-tracker';
 
 export type PlanDecision = 'ask' | 'confirm' | 'execute' | 'respond';
 
@@ -36,6 +37,11 @@ Regras de decisão:
 
 Regra absoluta: o plano jamais deve conter mais de uma pergunta. Se houver múltiplas informações
 faltando, escolha a mais importante e pergunte apenas essa. As demais serão coletadas nos próximos turnos.
+
+Gerenciamento de atenção:
+- Quando o modo de atenção for "execution": há objetivos ativos. TODA pergunta deve existir apenas para desbloquear esses objetivos. Não pergunte sobre outros assuntos (objeções, budget, reação ao preço etc.).
+- Quando o modo de atenção for "conversational": não há objetivos ativos. Você pode usar a bestNextQuestion para conduzir a conversa.
+- Quando o contextStatus for "closed": todos os objetivos foram concluídos. Confirme brevemente e aguarde. NÃO faça perguntas.
 
 Agentes disponíveis e suas ações:
 - agenda:   list_events, create_event, delete_event
@@ -101,6 +107,7 @@ export class Planner {
     session: ConversationSession,
     memoryContext: MemoryEntity[],
     assessment: ConfidenceAssessment,
+    goalState: GoalTrackerState,
   ): Promise<Plan> {
     const state = session.getSnapshot();
     const history = session.getRecentTurns(8);
@@ -121,6 +128,8 @@ export class Planner {
       .map((t) => `${t.role === 'user' ? 'Usuário' : 'Faro'}: ${t.content}`)
       .join('\n');
 
+    const goalBlock = this.buildGoalBlock(goalState);
+
     const response = await this.llm.generate({
       messages: [
         {
@@ -136,6 +145,7 @@ export class Planner {
             assessment.clarificationQuestion
               ? `Pergunta sugerida se necessário: "${assessment.clarificationQuestion}"`
               : '',
+            goalBlock,
             '\nProduz um plano de ação.',
           ].filter(Boolean).join('\n'),
         },
@@ -146,6 +156,16 @@ export class Planner {
     });
 
     const toolCall = response.toolCalls?.[0];
+
+    // Short-circuit: if context is closed, confirm and stop asking
+    if (goalState.contextStatus === 'closed') {
+      return {
+        decision: 'respond',
+        reasoning: 'All goals completed. Context is closed.',
+        directResponse: 'Todos os objetivos desta conversa foram concluídos.',
+      };
+    }
+
     if (!toolCall) {
       return {
         decision: 'respond',
@@ -155,5 +175,30 @@ export class Planner {
     }
 
     return toolCall.arguments as unknown as Plan;
+  }
+
+  private buildGoalBlock(goalState: GoalTrackerState): string {
+    if (goalState.goals.length === 0) return '';
+
+    const lines: string[] = ['\nGerenciamento de objetivos:'];
+    lines.push(`Modo de atenção: ${goalState.attentionMode}`);
+    lines.push(`Estado do contexto: ${goalState.contextStatus}`);
+
+    const open = goalState.goals.filter((g) => g.status === 'open' || g.status === 'awaiting_info');
+    const done = goalState.goals.filter((g) => g.status === 'completed');
+
+    if (open.length > 0) {
+      lines.push(`Objetivos em aberto: ${open.map((g) => g.description).join(', ')}`);
+      lines.push('INSTRUÇÃO: Modo execução ativo. Toda pergunta deve existir APENAS para desbloquear um objetivo em aberto. Não pergunte sobre outros assuntos.');
+      if (goalState.blockingQuestion) {
+        lines.push(`Próxima pergunta de desbloqueio sugerida: "${goalState.blockingQuestion}"`);
+      }
+    }
+
+    if (done.length > 0) {
+      lines.push(`Objetivos concluídos (não reabrir): ${done.map((g) => g.description).join(', ')}`);
+    }
+
+    return lines.join('\n');
   }
 }

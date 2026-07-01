@@ -1,5 +1,7 @@
 import { randomUUID } from 'crypto';
 import type { Intent } from '../orchestrator/intent';
+import { GoalTracker } from './goal-tracker';
+import type { GoalTrackerState } from './goal-tracker';
 
 export type TurnRole = 'user' | 'assistant';
 
@@ -36,8 +38,10 @@ export interface ConversationState {
 
 export class ConversationSession {
   private state: ConversationState;
+  readonly goalTracker: GoalTracker;
 
   constructor(userId: string) {
+    this.goalTracker = new GoalTracker();
     this.state = {
       id: randomUUID(),
       userId,
@@ -80,6 +84,10 @@ export class ConversationSession {
 
   setContext(key: string, value: unknown): void {
     this.state.context[key] = value;
+  }
+
+  getGoalState(): GoalTrackerState {
+    return this.goalTracker.getState();
   }
 
   getSnapshot(): Readonly<ConversationState> {

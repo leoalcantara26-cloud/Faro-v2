@@ -18,10 +18,9 @@ export interface EngineResponse {
 
 /**
  * Conversation Engine pipeline:
- * Intent → Memory → Confidence → Planner → Executor → Summarizer → MemoryWriter → ResponseComposer
- *
- * MemoryWriter runs silently — the user never sees what was persisted.
- * ResponseComposer adapts verbosity based on the user's AssistanceProfile.
+ * Intent → Memory+Profile → Confidence → GoalTracker.reopen
+ * → Planner(goalState) → Executor → Summarizer
+ * → GoalTracker.update → MemoryWriter → ResponseComposer(profile, goalState)
  */
 export class ConversationEngine {
   private confidence: ConfidenceLayer;
@@ -58,7 +57,7 @@ export class ConversationEngine {
     const intent = await classifyIntent(userMessage, this.llm);
     session.updateIntent(intent);
 
-    // 3. Fetch relevant memory context + user profile (in parallel)
+    // 3. Fetch memory context + user profile in parallel
     const [memoryContext, profile] = await Promise.all([
       this.memory.searchContext(session.userId, userMessage, 5),
       this.preferences.getProfile(session.userId),
@@ -68,22 +67,37 @@ export class ConversationEngine {
     const assessment = this.confidence.assess(intent, userMessage, session, memoryContext);
     session.setConfidence(assessment.score);
 
-    // 5. Plan (only produces a plan — no execution)
-    const plan = await this.planner.plan(session, memoryContext, assessment);
+    // 4b. Allow GoalTracker to reopen a context if user explicitly references it
+    session.goalTracker.reopenIfNeeded(userMessage);
+    const goalStateBefore = session.getGoalState();
+
+    // 5. Plan — receives goal state to enforce attention mode
+    const plan = await this.planner.plan(session, memoryContext, assessment, goalStateBefore);
 
     // 6. Execute
     const result = await this.executor.execute(plan, assessment, session);
 
-    // 7. Build structured understanding of the conversation
+    // 7. Summarize — extracts detectedGoals for this turn
     const understanding = await this.summarizer.summarize(userMessage, session);
 
-    // 8. Persist silently — user never sees this step
+    // 8. Update GoalTracker
+    // Register any new goals the user mentioned this turn
+    if (understanding.detectedGoals.length > 0) {
+      session.goalTracker.addGoals(understanding.detectedGoals);
+    }
+    // Mark goals as completed when an agent executed successfully
+    if (result.outcome === 'executed' && !result.error && plan.action?.agent) {
+      session.goalTracker.markCompletedByAgent(plan.action.agent);
+    }
+    const goalStateAfter = session.getGoalState();
+
+    // 9. Persist silently
     await this.memoryWriter.write(session.userId, understanding);
 
-    // 9. Compose response (profile-aware verbosity, uses bestNextQuestion)
-    const response = await this.composer.compose(result, session, understanding, profile);
+    // 10. Compose response — aware of profile and goal state
+    const response = await this.composer.compose(result, session, understanding, profile, goalStateAfter);
 
-    // 10. Record assistant turn
+    // 11. Record assistant turn
     session.addTurn('assistant', response.message);
 
     return response;
