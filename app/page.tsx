@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { MicButton } from '../components/MicButton';
 
@@ -32,6 +33,13 @@ function todayLabel() {
 
 export default function HomePage() {
   const router = useRouter();
+  const [userName, setUserName] = useState('');
+
+  useEffect(() => {
+    const stored = localStorage.getItem('faro_profile');
+    if (!stored) { router.replace('/onboarding'); return; }
+    try { setUserName(JSON.parse(stored).name?.split(' ')[0] || ''); } catch { /* ignore */ }
+  }, [router]);
 
   const handleTranscript = (text: string) => {
     router.push(`/chat?q=${encodeURIComponent(text)}`);
@@ -51,7 +59,9 @@ export default function HomePage() {
         <NavBtn icon="chat" onClick={() => router.push('/chat')} />
         <NavBtn icon="clients" onClick={() => router.push('/clients')} />
         <div className="flex-1" />
-        <div className="w-7 h-7 rounded-full bg-[#1a1a1a] border border-[#303030] flex items-center justify-center text-xs font-semibold text-[#737373]">L</div>
+        <button onClick={() => router.push('/profile')} className="w-7 h-7 rounded-full bg-[#1a1a1a] border border-[#303030] flex items-center justify-center text-xs font-semibold text-[#737373] hover:border-[#4ade80] hover:text-[#4ade80] transition-colors" title="Meu perfil">
+          {userName ? userName[0].toUpperCase() : '?'}
+        </button>
       </nav>
 
       {/* Main */}
@@ -59,7 +69,7 @@ export default function HomePage() {
 
         {/* Greeting */}
         <div className="text-center mb-11">
-          <p className="text-[17px] font-normal text-[#a3a3a3]">Bom dia, Leo.</p>
+          <p className="text-[17px] font-normal text-[#a3a3a3]">{userName ? `Bom dia, ${userName}.` : 'Bom dia.'}</p>
           <p className="text-[11px] font-mono text-[#3d3d3d] mt-1.5">{todayLabel()}</p>
         </div>
 

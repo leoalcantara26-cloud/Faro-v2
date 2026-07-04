@@ -105,4 +105,12 @@ export class ConversationSession {
   clearPendingAction(): void {
     this.state.pendingAction = null;
   }
+
+  setUserProfile(profile: Record<string, string>): void {
+    this.state.context['userProfile'] = profile;
+  }
+
+  getUserProfile(): Record<string, string> | null {
+    return (this.state.context['userProfile'] as Record<string, string>) ?? null;
+  }
 }
