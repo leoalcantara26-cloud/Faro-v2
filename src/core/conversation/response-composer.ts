@@ -89,8 +89,8 @@ export class ResponseComposer {
     understanding: ConversationUnderstanding,
     profile: AssistanceProfile = 'equilibrado',
     goalState?: GoalTrackerState,
+    onChunk?: (chunk: string) => void,
   ): Promise<ComposedResponse> {
-    // When context is closed, give a brief closing confirmation — no questions
     if (goalState?.conversation.status === 'closed') {
       return this.composeClosing(result, session, understanding, profile);
     }
@@ -100,7 +100,12 @@ export class ResponseComposer {
       .map((t) => `${t.role === 'user' ? 'Vendedor' : 'Faro'}: ${t.content}`)
       .join('\n');
 
-    const systemPrompt = `${BASE_RULES}\n${PROFILE_TONE[profile]}`;
+    const userProfile = session.getUserProfile();
+    const profileContext = userProfile
+      ? `\n\nCONTEXTO DO VENDEDOR:\nNome: ${userProfile.name || '—'}\nEmpresa: ${userProfile.company || '—'}\nCargo: ${userProfile.role || '—'}\nO que vende: ${userProfile.product || '—'}\nMercado-alvo: ${userProfile.market || '—'}${userProfile.avgTicket ? `\nTicket médio: ${userProfile.avgTicket}` : ''}${userProfile.instagram ? `\nInstagram: ${userProfile.instagram}` : ''}${userProfile.website ? `\nSite: ${userProfile.website}` : ''}\n\nUse este contexto para personalizar as respostas. Nunca mencione essas informações diretamente a menos que seja relevante.`
+      : '';
+
+    const systemPrompt = `${BASE_RULES}\n${PROFILE_TONE[profile]}${profileContext}`;
 
     const userContent = [
       historyText ? `Histórico recente:\n${historyText}` : '',
@@ -112,17 +117,20 @@ export class ResponseComposer {
       '\nEscreva a resposta do Faro.',
     ].filter(Boolean).join('\n');
 
-    const response = await this.llm.generate({
+    const request = {
       messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userContent },
+        { role: 'system' as const, content: systemPrompt },
+        { role: 'user' as const, content: userContent },
       ],
       temperature: 0.6,
       maxTokens: 300,
-    });
+    };
+
+    const response = onChunk
+      ? await this.llm.stream(request, onChunk)
+      : await this.llm.generate(request);
 
     const message = response.content.trim();
-
     const nextStepEmbedded = result.suggestedNextStep &&
       message.toLowerCase().includes(result.suggestedNextStep.toLowerCase().slice(0, 20));
 

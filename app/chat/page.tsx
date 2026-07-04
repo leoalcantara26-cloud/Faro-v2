@@ -46,24 +46,70 @@ function ChatContent() {
 
   const sendMessage = async (text: string) => {
     if (!text.trim() || loading) return;
-    const userMsg: Message = { role: 'user', content: text };
-    setMessages((prev) => [...prev, userMsg]);
+    setMessages((prev) => [...prev, { role: 'user', content: text }, { role: 'assistant', content: '' }]);
     setInput('');
     setLoading(true);
 
     try {
+      const storedProfile = localStorage.getItem('faro_profile');
+      const userProfile = storedProfile ? JSON.parse(storedProfile) : null;
+
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, sessionId }),
+        body: JSON.stringify({ message: text, sessionId, userProfile }),
       });
-      const data = await res.json() as { message?: string; context?: ChatContext; error?: string };
-      if (data.message) {
-        setMessages((prev) => [...prev, { role: 'assistant', content: data.message! }]);
+
+      if (!res.body) throw new Error('No stream');
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      setLoading(false);
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const event = JSON.parse(line.slice(6)) as
+              | { type: 'chunk'; text: string }
+              | { type: 'done'; context: ChatContext; nextStep?: string }
+              | { type: 'error'; message: string };
+
+            if (event.type === 'chunk') {
+              setMessages((prev) => {
+                const updated = [...prev];
+                updated[updated.length - 1] = {
+                  role: 'assistant',
+                  content: updated[updated.length - 1].content + event.text,
+                };
+                return updated;
+              });
+            } else if (event.type === 'done') {
+              setContext(event.context);
+            } else if (event.type === 'error') {
+              setMessages((prev) => {
+                const updated = [...prev];
+                updated[updated.length - 1] = { role: 'assistant', content: 'Ocorreu um erro. Tente novamente.' };
+                return updated;
+              });
+            }
+          } catch { /* ignore parse errors */ }
+        }
       }
-      if (data.context) setContext(data.context);
     } catch {
-      setMessages((prev) => [...prev, { role: 'assistant', content: 'Ocorreu um erro. Tente novamente.' }]);
+      setMessages((prev) => {
+        const updated = [...prev];
+        updated[updated.length - 1] = { role: 'assistant', content: 'Ocorreu um erro. Tente novamente.' };
+        return updated;
+      });
     } finally {
       setLoading(false);
     }
@@ -90,7 +136,7 @@ function ChatContent() {
         <NavBtn icon="chat" active />
         <NavBtn icon="clients" onClick={() => router.push('/clients')} />
         <div className="flex-1" />
-        <div className="w-7 h-7 rounded-full bg-[#1a1a1a] border border-[#303030] flex items-center justify-center text-xs font-semibold text-[#737373]">L</div>
+        <button onClick={() => router.push('/profile')} className="w-7 h-7 rounded-full bg-[#1a1a1a] border border-[#303030] flex items-center justify-center text-xs font-semibold text-[#737373] hover:border-[#4ade80] hover:text-[#4ade80] transition-colors" title="Meu perfil">P</button>
       </nav>
 
       {/* Chat area */}
@@ -141,7 +187,7 @@ function ChatContent() {
             </div>
           ))}
 
-          {loading && (
+          {loading && messages[messages.length - 1]?.content === '' && (
             <div className="flex items-start gap-2.5">
               <div className="w-6 h-6 rounded-full bg-[#14532d] border border-[#166534] flex items-center justify-center font-mono text-[9px] font-bold text-[#4ade80] flex-shrink-0 mt-0.5">F</div>
               <div className="px-3.5 py-2.5">

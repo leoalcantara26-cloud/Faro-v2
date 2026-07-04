@@ -1,40 +1,55 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { getEngine, getOrCreateSession } from '../../../src/server/engine-singleton';
 
 export async function POST(req: NextRequest) {
   try {
-    const { message, sessionId } = await req.json() as { message: string; sessionId: string };
+    const { message, sessionId, userProfile } = await req.json() as {
+      message: string;
+      sessionId: string;
+      userProfile?: Record<string, string>;
+    };
 
     if (!message?.trim()) {
-      return NextResponse.json({ error: 'Mensagem vazia.' }, { status: 400 });
+      return new Response(JSON.stringify({ error: 'Mensagem vazia.' }), { status: 400 });
     }
 
     const engine = await getEngine();
     const session = await getOrCreateSession(sessionId);
-    const response = await engine.process(session, message.trim());
 
-    const goalState = session.getGoalState();
-    const conversation = session.getConversation();
+    if (userProfile) {
+      session.setUserProfile(userProfile);
+    }
 
-    return NextResponse.json({
-      message: response.message,
-      nextStep: response.nextStep,
-      context: {
-        entities: conversation.entities,
-        goals: conversation.goals.map((g) => ({
-          id: g.id,
-          description: g.description,
-          status: g.status,
-        })),
-        conversationStatus: conversation.status,
-        attentionMode: goalState.attentionMode,
+    const encoder = new TextEncoder();
+
+    const stream = new ReadableStream({
+      async start(controller) {
+        try {
+          const result = await engine.processStream(
+            session,
+            message.trim(),
+            (chunk) => {
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'chunk', text: chunk })}\n\n`));
+            },
+          );
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done', context: result.context, nextStep: result.nextStep })}\n\n`));
+        } catch (err) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', message: err instanceof Error ? err.message : 'Erro interno.' })}\n\n`));
+        } finally {
+          controller.close();
+        }
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
       },
     });
   } catch (err) {
     console.error('[Chat API]', err);
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Erro interno.' },
-      { status: 500 },
-    );
+    return new Response(JSON.stringify({ error: err instanceof Error ? err.message : 'Erro interno.' }), { status: 500 });
   }
 }
