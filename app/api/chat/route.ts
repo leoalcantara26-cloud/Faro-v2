@@ -3,10 +3,11 @@ import { getEngine, getOrCreateSession } from '../../../src/server/engine-single
 
 export async function POST(req: NextRequest) {
   try {
-    const { message, sessionId, userProfile } = await req.json() as {
+    const { message, sessionId, userProfile, companyBriefing } = await req.json() as {
       message: string;
       sessionId: string;
       userProfile?: Record<string, string>;
+      companyBriefing?: Record<string, unknown>;
     };
 
     if (!message?.trim()) {
@@ -18,6 +19,9 @@ export async function POST(req: NextRequest) {
 
     if (userProfile) {
       session.setUserProfile(userProfile);
+    }
+    if (companyBriefing) {
+      session.setCompanyBriefing(companyBriefing);
     }
 
     const encoder = new TextEncoder();

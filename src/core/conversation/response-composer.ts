@@ -101,11 +101,24 @@ export class ResponseComposer {
       .join('\n');
 
     const userProfile = session.getUserProfile();
+    const briefing = session.getCompanyBriefing() as {
+      description?: string; positioning?: string; mainProducts?: string[];
+      targetAudience?: string; tone?: string; highlights?: string[];
+    } | null;
+
     const profileContext = userProfile
-      ? `\n\nCONTEXTO DO VENDEDOR:\nNome: ${userProfile.name || '—'}\nEmpresa: ${userProfile.company || '—'}\nCargo: ${userProfile.role || '—'}\nO que vende: ${userProfile.product || '—'}\nMercado-alvo: ${userProfile.market || '—'}${userProfile.avgTicket ? `\nTicket médio: ${userProfile.avgTicket}` : ''}${userProfile.instagram ? `\nInstagram: ${userProfile.instagram}` : ''}${userProfile.website ? `\nSite: ${userProfile.website}` : ''}\n\nUse este contexto para personalizar as respostas. Nunca mencione essas informações diretamente a menos que seja relevante.`
+      ? `\n\nCONTEXTO DO VENDEDOR:\nNome: ${userProfile.name || '—'}\nEmpresa: ${userProfile.company || '—'}\nCargo: ${userProfile.role || '—'}\nO que vende: ${userProfile.product || '—'}\nMercado-alvo: ${userProfile.market || '—'}${userProfile.avgTicket ? `\nTicket médio: ${userProfile.avgTicket}` : ''}${userProfile.instagram ? `\nInstagram: ${userProfile.instagram}` : ''}${userProfile.website ? `\nSite: ${userProfile.website}` : ''}`
       : '';
 
-    const systemPrompt = `${BASE_RULES}\n${PROFILE_TONE[profile]}${profileContext}`;
+    const briefingContext = briefing
+      ? `\n\nBRIEFING DA EMPRESA (pesquisado pelo Faro):${briefing.description ? `\nDescrição: ${briefing.description}` : ''}${briefing.positioning ? `\nPosicionamento: ${briefing.positioning}` : ''}${briefing.targetAudience ? `\nPúblico-alvo: ${briefing.targetAudience}` : ''}${briefing.tone ? `\nTom de comunicação: ${briefing.tone}` : ''}${briefing.mainProducts?.length ? `\nProdutos/Serviços: ${briefing.mainProducts.join(', ')}` : ''}${briefing.highlights?.length ? `\nDestaques: ${briefing.highlights.join('; ')}` : ''}`
+      : '';
+
+    const contextSuffix = (profileContext || briefingContext)
+      ? `${profileContext}${briefingContext}\n\nUse este contexto para personalizar as respostas. Nunca mencione essas informações diretamente a menos que seja relevante.`
+      : '';
+
+    const systemPrompt = `${BASE_RULES}\n${PROFILE_TONE[profile]}${contextSuffix}`;
 
     const userContent = [
       historyText ? `Histórico recente:\n${historyText}` : '',

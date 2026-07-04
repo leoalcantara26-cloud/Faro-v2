@@ -53,11 +53,13 @@ function ChatContent() {
     try {
       const storedProfile = localStorage.getItem('faro_profile');
       const userProfile = storedProfile ? JSON.parse(storedProfile) : null;
+      const storedBriefing = localStorage.getItem('faro_company_briefing');
+      const companyBriefing = storedBriefing ? JSON.parse(storedBriefing) : null;
 
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, sessionId, userProfile }),
+        body: JSON.stringify({ message: text, sessionId, userProfile, companyBriefing }),
       });
 
       if (!res.body) throw new Error('No stream');

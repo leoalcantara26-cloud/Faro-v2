@@ -113,4 +113,12 @@ export class ConversationSession {
   getUserProfile(): Record<string, string> | null {
     return (this.state.context['userProfile'] as Record<string, string>) ?? null;
   }
+
+  setCompanyBriefing(briefing: Record<string, unknown>): void {
+    this.state.context['companyBriefing'] = briefing;
+  }
+
+  getCompanyBriefing(): Record<string, unknown> | null {
+    return (this.state.context['companyBriefing'] as Record<string, unknown>) ?? null;
+  }
 }
